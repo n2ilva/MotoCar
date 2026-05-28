@@ -497,6 +497,7 @@ class OfferCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = offer.isWorthwhile ? Colors.green : Colors.red;
     final time = DateFormat('dd/MM HH:mm').format(offer.detectedAt);
+    final rideDuration = offer.rideDuration;
     return Card(
       color: color.withValues(alpha: prominent ? .22 : .12),
       shape: RoundedRectangleBorder(
@@ -554,12 +555,23 @@ class OfferCard extends StatelessWidget {
               'Ate passageiro: ${offer.pickupKm.toStringAsFixed(1)} km   '
               'Destino: ${offer.destinationKm.toStringAsFixed(1)} km',
             ),
+            if (rideDuration != null)
+              Text('Tempo da corrida: ${_durationLabel(rideDuration)}'),
             if (!prominent)
               Text(time, style: Theme.of(context).textTheme.bodySmall),
           ],
         ),
       ),
     );
+  }
+
+  String _durationLabel(Duration duration) {
+    final minutes = duration.inMinutes;
+    if (minutes < 1) return '<1 min';
+    if (minutes < 60) return '$minutes min';
+    final hours = minutes ~/ 60;
+    final remaining = minutes % 60;
+    return remaining == 0 ? '${hours}h' : '${hours}h ${remaining}min';
   }
 }
 

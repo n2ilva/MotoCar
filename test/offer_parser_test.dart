@@ -99,4 +99,106 @@ void main() {
       expect(offer?.farePerKm, closeTo(1.635, 0.001));
     },
   );
+
+  test('ignora painel do proprio app quando aparece sozinho no OCR', () {
+    expect(
+      parser.parse(
+        '17:07 GOIANIA\n'
+        '99 | R\$ 6,80 | Busca 2,10 km | Destino 3,50 km\n'
+        'R\$ 1,21/km\n'
+        'FORA DO LIMITE',
+        const DriverSettings(),
+      ),
+      isNull,
+    );
+  });
+
+  test('reconhece card real da 99 ignorando painel do proprio app', () {
+    final offer = parser.parse(
+      '17:07 GOIANIA\n'
+      '99 | R\$ 6,80 | Busca 2,10 km | Destino 3,50 km\n'
+      'R\$ 1,21/km\n'
+      'FORA DO LIMITE\n'
+      'R\$6,80\n'
+      'R\$1,23/km\n'
+      'R\$1,45 Tarifa base dinamica incl.\n'
+      '4,92 641 corridas Perfil Premium\n'
+      '4min (2,1km)\n'
+      'Senador Canedo\n'
+      '5min (3,5km)\n'
+      'PSF Vila Sao Sebastiao, Av Senador Canedo',
+      const DriverSettings(),
+    );
+
+    expect(offer?.platform, RidePlatform.ninetyNine);
+    expect(offer?.fare, 6.8);
+    expect(offer?.pickupKm, 2.1);
+    expect(offer?.destinationKm, 3.5);
+    expect(offer?.farePerKm, closeTo(1.214, 0.001));
+  });
+
+  test('ignora painel Uber do proprio app quando aparece sozinho no OCR', () {
+    expect(
+      parser.parse(
+        'Uber | R\$ 6,42 | Busca 1,70 km | Destino 2,90 km\n'
+        'R\$ 1,40/km\n'
+        'VALE A PENA',
+        const DriverSettings(),
+      ),
+      isNull,
+    );
+  });
+
+  test('ignora painel UberX do proprio app quando aparece sozinho no OCR', () {
+    expect(
+      parser.parse(
+        'UberX | R\$ 6,42 | Busca 1,70 km | Destino 2,90 km\n'
+        'R\$ 1,40/km\n'
+        'VALE A PENA',
+        const DriverSettings(),
+      ),
+      isNull,
+    );
+  });
+
+  test('reconhece card visual da Uber ignorando valor do mapa', () {
+    final offer = parser.parse(
+      '17:10 GOIANIA\nR\$7,10\nSecretaria de Esportes Senador Canedo\n'
+      'UberX\nExclusivo\nR\$ 6,42\n4,93 (438)\nVerificado\n'
+      '+10% de ganhos Uber Pro\n'
+      '4 minutos (1.7 km) de distancia\n'
+      'rua benjamin santos, Senador Canedo\n'
+      'Viagem de 6 minutos (2.9 km)\n'
+      '- Jardim Sevilha - Goiania - GO, 75250\n'
+      'Aceitar',
+      const DriverSettings(),
+    );
+
+    expect(offer?.platform, RidePlatform.uber);
+    expect(offer?.fare, 6.42);
+    expect(offer?.pickupKm, 1.7);
+    expect(offer?.destinationKm, 2.9);
+    expect(offer?.farePerKm, closeTo(1.395, 0.001));
+  });
+
+  test('reconhece card real da Uber ignorando painel do proprio app', () {
+    final offer = parser.parse(
+      'Uber | R\$ 6,42 | Busca 1,70 km | Destino 2,90 km\n'
+      'R\$ 1,40/km\n'
+      'VALE A PENA\n'
+      'UberX\n'
+      'Exclusivo\n'
+      'R\$ 6,42\n'
+      '4 minutos (1.7 km) de distancia\n'
+      'rua benjamin santos, Senador Canedo\n'
+      'Viagem de 6 minutos (2.9 km)\n'
+      '- Jardim Sevilha - Goiania - GO, 75250',
+      const DriverSettings(),
+    );
+
+    expect(offer?.platform, RidePlatform.uber);
+    expect(offer?.fare, 6.42);
+    expect(offer?.pickupKm, 1.7);
+    expect(offer?.destinationKm, 2.9);
+  });
 }

@@ -43,12 +43,22 @@ class ScreenCaptureService : Service() {
         const val EXTRA_RESULT_CODE = "resultCode"
         const val EXTRA_RESULT_DATA = "resultData"
         const val EXTRA_APP_VISIBLE = "appVisible"
+        const val OFFER_STABILITY_DELAY_MS = 900L
         var running: Boolean = false
             private set
     }
 
     private val handler = Handler(Looper.getMainLooper())
     private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    private val ownOverlaySummary = Regex(
+        """\b(?:uberx?|99)\s*\|\s*r\$\s*\d+(?:[.,]\d{1,2})?\s*\|\s*busca\s*""" +
+            """\d+(?:[.,]\d+)?\s*km\s*\|\s*destino\s*\d+(?:[.,]\d+)?\s*km\b""",
+        RegexOption.IGNORE_CASE
+    )
+    private val ownOverlayStatus = Regex(
+        """\b(?:vale a pena|fora do limite)\b""",
+        RegexOption.IGNORE_CASE
+    )
     private lateinit var windowManager: WindowManager
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -57,7 +67,10 @@ class ScreenCaptureService : Service() {
     private var acceptFab: TextView? = null
     private var closeTarget: TextView? = null
     private var latestOffer: DetectedOffer? = null
+    private var activeOffer: DetectedOffer? = null
     private var acceptedFingerprint: String? = null
+    private var pendingOfferFingerprint: String? = null
+    private var pendingOfferSince = 0L
     private var appVisible = false
     private var processing = false
     private var lastFrameAt = 0L
@@ -138,7 +151,12 @@ class ScreenCaptureService : Service() {
                 if (appVisible) {
                     return@addOnSuccessListener
                 }
-                parseOffer(result.text)?.let(::handleOffer)
+                val offer = parseOffer(result.text)
+                if (offer == null) {
+                    clearPendingOffer()
+                } else {
+                    handleOfferCandidate(offer)
+                }
             }
             .addOnCompleteListener {
                 bitmap.recycle()
@@ -160,19 +178,25 @@ class ScreenCaptureService : Service() {
             .replace('õ', 'o')
             .replace('ú', 'u')
             .replace('ç', 'c')
-        if (!looksLikeRequestCard(normalised)) return null
+        val readableText = normalised
+            .replace(ownOverlaySummary, " ")
+            .replace(ownOverlayStatus, " ")
+        if (!looksLikeRequestCard(readableText)) return null
 
-        val platform = if (Regex("""\buber\s*x\b""").containsMatchIn(normalised)) {
+        val platform = if (Regex("""\buber\s*x\b""").containsMatchIn(readableText)) {
             "Uber"
         } else {
             "99"
         }
-        val fareText = Regex("""r\$\s*(\d+(?:[.,]\d{2})?)""", RegexOption.IGNORE_CASE)
-            .find(normalised)?.groupValues?.get(1) ?: return null
+        val fareText = Regex(
+            """r\$\s*(\d+(?:[.,]\d{2})?)(?![\d.,]|\s*/\s*km)""",
+            RegexOption.IGNORE_CASE
+        )
+            .find(readableText)?.groupValues?.get(1) ?: return null
         val distances = Regex("""(\d+(?:[.,]\d+)?)\s*(km|m)\b""", RegexOption.IGNORE_CASE)
-            .findAll(normalised)
+            .findAll(readableText)
             .filter { match ->
-                !normalised.substring(0, match.range.first).trimEnd().endsWith("/")
+                !readableText.substring(0, match.range.first).trimEnd().endsWith("/")
             }
             .map { match ->
                 val distance = decimal(match.groupValues[1])
@@ -214,9 +238,31 @@ class ScreenCaptureService : Service() {
         return canonical.toDoubleOrNull() ?: 0.0
     }
 
+    private fun handleOfferCandidate(offer: DetectedOffer) {
+        if (activeOffer != null) {
+            clearPendingOffer()
+            return
+        }
+        val now = System.currentTimeMillis()
+        val fingerprint = offerFingerprint(offer)
+        if (pendingOfferFingerprint != fingerprint) {
+            pendingOfferFingerprint = fingerprint
+            pendingOfferSince = now
+            return
+        }
+        if (now - pendingOfferSince < OFFER_STABILITY_DELAY_MS) return
+        clearPendingOffer()
+        handleOffer(offer)
+    }
+
+    private fun clearPendingOffer() {
+        pendingOfferFingerprint = null
+        pendingOfferSince = 0L
+    }
+
     private fun handleOffer(offer: DetectedOffer) {
         val now = System.currentTimeMillis()
-        val fingerprint = "${offer.platform}:${offer.fare}:${offer.pickup}:${offer.destination}"
+        val fingerprint = offerFingerprint(offer)
         if (fingerprint == lastFingerprint && now - lastOfferAt < 12000) return
         lastFingerprint = fingerprint
         lastOfferAt = now
@@ -225,6 +271,9 @@ class ScreenCaptureService : Service() {
         sendOfferEvent("detected", offer.rawText)
         showPopup(offer)
     }
+
+    private fun offerFingerprint(offer: DetectedOffer) =
+        "${offer.platform}:${offer.fare}:${offer.pickup}:${offer.destination}"
 
     private fun showPopup(offer: DetectedOffer) {
         removeOfferPopup()
@@ -288,12 +337,10 @@ class ScreenCaptureService : Service() {
         val size = dp(68)
         val button = TextView(this).apply {
             gravity = Gravity.CENTER
-            text = "ACEITEI"
-            textSize = 10f
             setTextColor(Color.WHITE)
             typeface = android.graphics.Typeface.DEFAULT_BOLD
-            background = fabBackground(Color.rgb(18, 107, 83))
         }
+        updateAcceptFab(button)
         val metrics = resources.displayMetrics
         val params = WindowManager.LayoutParams(
             size,
@@ -448,6 +495,11 @@ class ScreenCaptureService : Service() {
     }
 
     private fun acceptLatestOffer() {
+        val active = activeOffer
+        if (active != null) {
+            finishActiveOffer(active)
+            return
+        }
         val offer = latestOffer
         if (offer == null) {
             Toast.makeText(this, "Nenhuma oferta identificada para aceitar.", Toast.LENGTH_SHORT)
@@ -461,10 +513,32 @@ class ScreenCaptureService : Service() {
             return
         }
         acceptedFingerprint = fingerprint
+        activeOffer = offer
         sendOfferEvent("accepted", offer.rawText)
         removeOfferPopup()
+        updateAcceptFab()
         Toast.makeText(this, "Corrida ${offer.platform} salva como aceita.", Toast.LENGTH_SHORT)
             .show()
+    }
+
+    private fun finishActiveOffer(offer: DetectedOffer) {
+        sendOfferEvent("completed", offer.rawText)
+        activeOffer = null
+        latestOffer = null
+        acceptedFingerprint = null
+        updateAcceptFab()
+        Toast.makeText(this, "Corrida ${offer.platform} finalizada.", Toast.LENGTH_SHORT)
+            .show()
+    }
+
+    private fun updateAcceptFab(button: TextView? = acceptFab) {
+        button ?: return
+        val finishing = activeOffer != null
+        button.text = if (finishing) "FINALIZAR" else "ACEITEI"
+        button.textSize = if (finishing) 9f else 10f
+        button.background = fabBackground(
+            if (finishing) Color.rgb(35, 82, 145) else Color.rgb(18, 107, 83)
+        )
     }
 
     private fun format(value: Double) = String.format(Locale("pt", "BR"), "%.2f", value)

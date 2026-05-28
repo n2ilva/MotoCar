@@ -32,6 +32,12 @@ class RideOffer {
   String get platformLabel => platform == RidePlatform.uber ? 'Uber' : '99';
   bool get accepted => acceptedAt != null;
   bool get completed => completedAt != null;
+  Duration? get rideDuration {
+    final start = acceptedAt;
+    final end = completedAt;
+    if (start == null || end == null || end.isBefore(start)) return null;
+    return end.difference(start);
+  }
 
   Map<String, Object?> toMap() => {
     'id': id,

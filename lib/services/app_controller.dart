@@ -29,6 +29,7 @@ class AppController extends ChangeNotifier {
   bool screenMonitorRunning = false;
 
   StreamSubscription<Map<Object?, Object?>>? _offerSubscription;
+  Future<void> _nativeOfferQueue = Future<void>.value();
   String? _lastFingerprint;
   DateTime? _lastDetectedAt;
 
@@ -37,18 +38,26 @@ class AppController extends ChangeNotifier {
     await _monitor.updateSettings(settings);
     await _refreshHistory();
     screenMonitorRunning = await _monitor.isRunning();
-    _offerSubscription = _monitor.offers.listen(_onNativeOffer);
+    _offerSubscription = _monitor.offers.listen(_queueNativeOffer);
     for (final map in await _monitor.pendingOffers()) {
-      await _onNativeOffer(map);
+      _queueNativeOffer(map);
     }
+    await _nativeOfferQueue;
     loading = false;
     notifyListeners();
   }
 
+  void _queueNativeOffer(Map<Object?, Object?> map) {
+    _nativeOfferQueue = _nativeOfferQueue
+        .then((_) => _onNativeOffer(map))
+        .catchError((Object error, StackTrace stackTrace) {
+          if (kDebugMode) {
+            debugPrint('Erro ao processar evento do monitor: $error');
+          }
+        });
+  }
+
   Future<void> _onNativeOffer(Map<Object?, Object?> map) async {
-    // Aguarda 1 segundo para a animação de entrada da notificação terminar
-    // antes de ler o texto, evitando capturar frames de transição.
-    await Future<void>.delayed(const Duration(seconds: 1));
     final raw = (map['rawText'] as String?) ?? '';
     final parsed = _parser.parse(raw, settings, source: 'monitor_android');
     if (parsed == null) return;
