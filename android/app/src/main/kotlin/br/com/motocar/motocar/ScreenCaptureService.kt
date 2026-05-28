@@ -1,23 +1,16 @@
 package br.com.motocar.motocar
 
-import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.content.pm.ServiceInfo
-import android.content.ContentValues
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
-import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
@@ -30,22 +23,18 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
-import androidx.core.content.ContextCompat
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import org.json.JSONArray
 import org.json.JSONObject
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 
-class ScreenCaptureService : Service(), LocationListener {
+class ScreenCaptureService : Service() {
     companion object {
         const val PREFS = "motocar_monitor"
         const val ACTION_OFFER = "br.com.motocar.NEW_OFFER"
@@ -53,7 +42,6 @@ class ScreenCaptureService : Service(), LocationListener {
         const val EXTRA_RAW_TEXT = "rawText"
         const val EXTRA_RESULT_CODE = "resultCode"
         const val EXTRA_RESULT_DATA = "resultData"
-        const val EXTRA_LOCATION_ENABLED = "locationEnabled"
         const val EXTRA_APP_VISIBLE = "appVisible"
         var running: Boolean = false
             private set
@@ -66,14 +54,10 @@ class ScreenCaptureService : Service(), LocationListener {
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private var popup: View? = null
-    private var trackingFab: TextView? = null
+    private var acceptFab: TextView? = null
     private var closeTarget: TextView? = null
-    private var locationManager: LocationManager? = null
-    private var locationForegroundEnabled = false
-    private var trackingSessionId: Long? = null
-    private var trackingDistanceKm = 0.0
-    private var lastLocation: Location? = null
-    private var activeAcceptedRawText: String? = null
+    private var latestOffer: DetectedOffer? = null
+    private var acceptedFingerprint: String? = null
     private var appVisible = false
     private var processing = false
     private var lastFrameAt = 0L
@@ -83,8 +67,8 @@ class ScreenCaptureService : Service(), LocationListener {
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        updateForegroundType(includeLocation = false)
-        showTrackingFab()
+        startForeground(44, buildNotification())
+        showAcceptFab()
         running = true
     }
 
@@ -96,10 +80,6 @@ class ScreenCaptureService : Service(), LocationListener {
         }
         if (projection != null) return START_NOT_STICKY
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: return START_NOT_STICKY
-        if (intent.getBooleanExtra(EXTRA_LOCATION_ENABLED, false)) {
-            locationForegroundEnabled = true
-            updateForegroundType(includeLocation = true)
-        }
         @Suppress("DEPRECATION")
         val resultData = if (Build.VERSION.SDK_INT >= 33) {
             intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
@@ -158,11 +138,7 @@ class ScreenCaptureService : Service(), LocationListener {
                 if (appVisible) {
                     return@addOnSuccessListener
                 }
-                if (activeAcceptedRawText != null && detectsCompletedRide(result.text)) {
-                    stopFloatingTracking(markCompleted = true)
-                } else {
-                    parseOffer(result.text)?.let(::handleOffer)
-                }
+                parseOffer(result.text)?.let(::handleOffer)
             }
             .addOnCompleteListener {
                 bitmap.recycle()
@@ -172,22 +148,63 @@ class ScreenCaptureService : Service(), LocationListener {
 
     private fun parseOffer(rawText: String): DetectedOffer? {
         val normalised = rawText.lowercase(Locale("pt", "BR"))
-        val platform = when {
-            normalised.contains("uber") -> "Uber"
-            Regex("""(^|\D)99(\D|$)""").containsMatchIn(normalised) ||
-                normalised.contains("99pop") -> "99"
-            else -> return null
+            .replace('ã', 'a')
+            .replace('á', 'a')
+            .replace('à', 'a')
+            .replace('â', 'a')
+            .replace('é', 'e')
+            .replace('ê', 'e')
+            .replace('í', 'i')
+            .replace('ó', 'o')
+            .replace('ô', 'o')
+            .replace('õ', 'o')
+            .replace('ú', 'u')
+            .replace('ç', 'c')
+        if (!looksLikeRequestCard(normalised)) return null
+
+        val platform = if (Regex("""\buber\s*x\b""").containsMatchIn(normalised)) {
+            "Uber"
+        } else {
+            "99"
         }
         val fareText = Regex("""r\$\s*(\d+(?:[.,]\d{2})?)""", RegexOption.IGNORE_CASE)
             .find(normalised)?.groupValues?.get(1) ?: return null
-        val distances = Regex("""(\d+(?:[.,]\d+)?)\s*km""", RegexOption.IGNORE_CASE)
-            .findAll(normalised).map { decimal(it.groupValues[1]) }.toList()
+        val distances = Regex("""(\d+(?:[.,]\d+)?)\s*(km|m)\b""", RegexOption.IGNORE_CASE)
+            .findAll(normalised)
+            .filter { match ->
+                !normalised.substring(0, match.range.first).trimEnd().endsWith("/")
+            }
+            .map { match ->
+                val distance = decimal(match.groupValues[1])
+                if (match.groupValues[2] == "m") distance / 1000 else distance
+            }
+            .toList()
         if (distances.size < 2) return null
         val fare = decimal(fareText)
         val pickup = distances[0]
         val destination = distances[1]
         if (fare <= 0 || destination <= 0) return null
         return DetectedOffer(platform, fare, pickup, destination, rawText)
+    }
+
+    private fun looksLikeRequestCard(text: String): Boolean {
+        if (Regex("""\buber\s*x\b""").containsMatchIn(text)) return true
+
+        val timedRouteLines = Regex(
+            """\d+\s*min\s*\(\s*\d+(?:[.,]\d+)?\s*(?:km|m)\s*\)"""
+        ).findAll(text).count()
+        if (timedRouteLines >= 2) return true
+
+        val hasRequestMarker = Regex(
+            """\b(99|99pop|oferta|solicitacao|aceitar|recusar|nova corrida|chamada)\b"""
+        ).containsMatchIn(text)
+        val hasPickupMarker = Regex(
+            """\b(ate voce|buscar|passageiro|embarque|coleta)\b"""
+        ).containsMatchIn(text)
+        val hasDestinationMarker = Regex(
+            """\b(viagem|corrida|destino|desembarque)\b"""
+        ).containsMatchIn(text)
+        return hasRequestMarker && hasPickupMarker && hasDestinationMarker
     }
 
     private fun decimal(value: String): Double {
@@ -203,6 +220,8 @@ class ScreenCaptureService : Service(), LocationListener {
         if (fingerprint == lastFingerprint && now - lastOfferAt < 12000) return
         lastFingerprint = fingerprint
         lastOfferAt = now
+        latestOffer = offer
+        acceptedFingerprint = null
         sendOfferEvent("detected", offer.rawText)
         showPopup(offer)
     }
@@ -237,23 +256,19 @@ class ScreenCaptureService : Service(), LocationListener {
             setPadding(dp(14), 0, dp(14), dp(5))
             text = if (worthIt) "VALE A PENA" else "FORA DO LIMITE"
         }
-        val accept = Button(this).apply {
-            text = "ACEITEI - INICIAR TRAJETO"
-            setOnClickListener { handleAcceptedOffer(offer) }
-        }
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(color)
             addView(summary)
             addView(perKm)
             addView(status)
-            addView(accept)
         }
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
@@ -269,29 +284,11 @@ class ScreenCaptureService : Service(), LocationListener {
         }, 6500)
     }
 
-    private fun handleAcceptedOffer(offer: DetectedOffer) {
-        activeAcceptedRawText = offer.rawText
-        sendOfferEvent("accepted", offer.rawText)
-        removeOfferPopup()
-        if (trackingSessionId == null) startFloatingTracking()
-    }
-
-    private fun detectsCompletedRide(rawText: String): Boolean {
-        val normalised = rawText.lowercase(Locale("pt", "BR"))
-        return listOf(
-            "viagem concluida",
-            "corrida concluida",
-            "corrida finalizada",
-            "resumo da viagem",
-            "resumo da corrida"
-        ).any(normalised::contains)
-    }
-
-    private fun showTrackingFab() {
+    private fun showAcceptFab() {
         val size = dp(68)
         val button = TextView(this).apply {
             gravity = Gravity.CENTER
-            text = "PLAY\nTRAJETO"
+            text = "ACEITEI"
             textSize = 10f
             setTextColor(Color.WHITE)
             typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -311,7 +308,7 @@ class ScreenCaptureService : Service(), LocationListener {
         }
         enableFabDrag(button, params)
         windowManager.addView(button, params)
-        trackingFab = button
+        acceptFab = button
     }
 
     private fun fabBackground(color: Int) = GradientDrawable().apply {
@@ -373,7 +370,7 @@ class ScreenCaptureService : Service(), LocationListener {
                         hideCloseTarget()
                         if (close) shutdownMonitoring()
                     } else {
-                        toggleFloatingTracking()
+                        acceptLatestOffer()
                     }
                     true
                 }
@@ -441,7 +438,6 @@ class ScreenCaptureService : Service(), LocationListener {
 
     private fun shutdownMonitoring() {
         hideCloseTarget()
-        if (trackingSessionId != null) stopFloatingTracking()
         sendBroadcast(Intent(ACTION_CLOSE_APP).setPackage(packageName))
         stopSelf()
     }
@@ -451,111 +447,25 @@ class ScreenCaptureService : Service(), LocationListener {
         popup = null
     }
 
-    private fun toggleFloatingTracking() {
-        if (trackingSessionId == null) {
-            startFloatingTracking()
-        } else {
-            stopFloatingTracking(markCompleted = activeAcceptedRawText != null)
-        }
-    }
-
-    private fun startFloatingTracking() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            Toast.makeText(
-                this,
-                "Autorize localizacao no MotoCar antes de medir o trajeto.",
-                Toast.LENGTH_LONG
-            ).show()
+    private fun acceptLatestOffer() {
+        val offer = latestOffer
+        if (offer == null) {
+            Toast.makeText(this, "Nenhuma oferta identificada para aceitar.", Toast.LENGTH_SHORT)
+                .show()
             return
         }
-        if (!locationForegroundEnabled) {
-            Toast.makeText(
-                this,
-                "Autorize localizacao e reinicie a leitura para usar o trajeto.",
-                Toast.LENGTH_LONG
-            ).show()
+        val fingerprint = "${offer.platform}:${offer.fare}:${offer.pickup}:${offer.destination}"
+        if (acceptedFingerprint == fingerprint) {
+            Toast.makeText(this, "Esta oferta ja foi marcada como aceita.", Toast.LENGTH_SHORT)
+                .show()
             return
         }
-        trackingDistanceKm = 0.0
-        lastLocation = null
-        val values = ContentValues().apply {
-            put("started_at", timestamp())
-            putNull("finished_at")
-            put("distance_km", 0.0)
-        }
-        trackingSessionId = openOrCreateDatabase("motocar.db", MODE_PRIVATE, null).use {
-            it.insert("tracking_sessions", null, values)
-        }
-        locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
-        try {
-            locationManager?.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER,
-                1000L,
-                10f,
-                this
-            )
-            locationManager?.requestLocationUpdates(
-                LocationManager.NETWORK_PROVIDER,
-                2000L,
-                10f,
-                this
-            )
-        } catch (_: SecurityException) {
-            stopFloatingTracking()
-            return
-        }
-        updateTrackingFab()
+        acceptedFingerprint = fingerprint
+        sendOfferEvent("accepted", offer.rawText)
+        removeOfferPopup()
+        Toast.makeText(this, "Corrida ${offer.platform} salva como aceita.", Toast.LENGTH_SHORT)
+            .show()
     }
-
-    private fun stopFloatingTracking(markCompleted: Boolean = false) {
-        locationManager?.removeUpdates(this)
-        locationManager = null
-        trackingSessionId?.let { id ->
-            val values = ContentValues().apply {
-                put("finished_at", timestamp())
-                put("distance_km", trackingDistanceKm)
-            }
-            openOrCreateDatabase("motocar.db", MODE_PRIVATE, null).use {
-                it.update("tracking_sessions", values, "id = ?", arrayOf(id.toString()))
-            }
-        }
-        trackingSessionId = null
-        lastLocation = null
-        if (markCompleted) {
-            activeAcceptedRawText?.let { sendOfferEvent("completed", it) }
-            activeAcceptedRawText = null
-        }
-        updateTrackingFab()
-    }
-
-    override fun onLocationChanged(location: Location) {
-        lastLocation?.let { previous ->
-            trackingDistanceKm += previous.distanceTo(location) / 1000.0
-        }
-        lastLocation = location
-        trackingSessionId?.let { id ->
-            val values = ContentValues().apply { put("distance_km", trackingDistanceKm) }
-            openOrCreateDatabase("motocar.db", MODE_PRIVATE, null).use {
-                it.update("tracking_sessions", values, "id = ?", arrayOf(id.toString()))
-            }
-        }
-        updateTrackingFab()
-    }
-
-    private fun updateTrackingFab() {
-        val active = trackingSessionId != null
-        trackingFab?.apply {
-            text = if (active) "PAUSE\n${format(trackingDistanceKm)} km" else "PLAY\nTRAJETO"
-            background = fabBackground(
-                if (active) Color.rgb(175, 35, 43) else Color.rgb(18, 107, 83)
-            )
-        }
-    }
-
-    private fun timestamp() =
-        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US).format(Date())
 
     private fun format(value: Double) = String.format(Locale("pt", "BR"), "%.2f", value)
 
@@ -607,21 +517,9 @@ class ScreenCaptureService : Service(), LocationListener {
             .build()
     }
 
-    private fun updateForegroundType(includeLocation: Boolean) {
-        val notification = buildNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-            if (includeLocation) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
-            startForeground(44, notification, types)
-        } else {
-            startForeground(44, notification)
-        }
-    }
-
     override fun onDestroy() {
-        if (trackingSessionId != null) stopFloatingTracking()
         removeOfferPopup()
-        trackingFab?.let(windowManager::removeView)
+        acceptFab?.let(windowManager::removeView)
         hideCloseTarget()
         imageReader?.close()
         virtualDisplay?.release()

@@ -3,7 +3,6 @@ import 'package:sqflite/sqflite.dart';
 
 import '../models/driver_settings.dart';
 import '../models/offer.dart';
-import '../models/tracking_session.dart';
 
 class DatabaseService {
   static const retentionDays = 15;
@@ -14,7 +13,7 @@ class DatabaseService {
     final dbPath = join(await getDatabasesPath(), 'motocar.db');
     _database = await openDatabase(
       dbPath,
-      version: 3,
+      version: 4,
       onCreate: (db, _) async {
         await db.execute('''
           CREATE TABLE settings (
@@ -45,14 +44,6 @@ class DatabaseService {
           )
         ''');
         await _createOfferUniquenessIndex(db);
-        await db.execute('''
-          CREATE TABLE tracking_sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            started_at TEXT NOT NULL,
-            finished_at TEXT,
-            distance_km REAL NOT NULL
-          )
-        ''');
         await db.insert('settings', const DriverSettings().toMap());
       },
       onUpgrade: (db, oldVersion, _) async {
@@ -64,6 +55,9 @@ class DatabaseService {
           await _mergeDuplicateOffers(db);
           await _createOfferUniquenessIndex(db);
         }
+        if (oldVersion < 4) {
+          await db.execute('DROP TABLE IF EXISTS tracking_sessions');
+        }
       },
     );
     return _database!;
@@ -72,16 +66,24 @@ class DatabaseService {
   Future<DriverSettings> loadSettings() async {
     final db = await database;
     final rows = await db.query('settings', where: 'id = 1');
+    if (rows.isEmpty) {
+      const defaults = DriverSettings();
+      await db.insert(
+        'settings',
+        defaults.toMap(),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      return defaults;
+    }
     return DriverSettings.fromMap(rows.single);
   }
 
   Future<void> saveSettings(DriverSettings settings) async {
     final db = await database;
-    await db.update(
+    await db.insert(
       'settings',
       settings.toMap(),
-      where: 'id = 1',
-      whereArgs: const [1],
+      conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }
 
@@ -156,36 +158,6 @@ class DatabaseService {
     return rows.isEmpty ? null : rows.single['id'] as int;
   }
 
-  Future<TrackingSession> startTrackingSession() async {
-    final db = await database;
-    await _purgeExpiredData(db);
-    final session = TrackingSession(startedAt: DateTime.now());
-    final map = session.toMap()..remove('id');
-    final id = await db.insert('tracking_sessions', map);
-    return TrackingSession(id: id, startedAt: session.startedAt);
-  }
-
-  Future<void> updateTrackingSession(TrackingSession session) async {
-    final db = await database;
-    final map = session.toMap()..remove('id');
-    await db.update(
-      'tracking_sessions',
-      map,
-      where: 'id = ?',
-      whereArgs: [session.id],
-    );
-  }
-
-  Future<List<TrackingSession>> loadSessions() async {
-    final db = await database;
-    await _purgeExpiredData(db);
-    final rows = await db.query(
-      'tracking_sessions',
-      orderBy: 'started_at DESC',
-    );
-    return rows.map(TrackingSession.fromMap).toList();
-  }
-
   static Future<void> _createOfferUniquenessIndex(Database db) async {
     await db.execute('''
       CREATE UNIQUE INDEX IF NOT EXISTS offers_unique_request
@@ -233,10 +205,5 @@ class DatabaseService {
         .subtract(const Duration(days: retentionDays))
         .toIso8601String();
     await db.delete('offers', where: 'detected_at < ?', whereArgs: [cutoff]);
-    await db.delete(
-      'tracking_sessions',
-      where: 'started_at < ?',
-      whereArgs: [cutoff],
-    );
   }
 }

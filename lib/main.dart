@@ -99,18 +99,6 @@ class _HomePageState extends State<HomePage> {
             ),
           ],
         ),
-        floatingActionButton: FloatingActionButton.extended(
-          onPressed: controller.toggleTracking,
-          backgroundColor: controller.tracking
-              ? Colors.red.shade700
-              : Theme.of(context).colorScheme.primary,
-          icon: Icon(controller.tracking ? Icons.pause : Icons.play_arrow),
-          label: Text(
-            controller.tracking
-                ? '${controller.currentSession?.distanceKm.toStringAsFixed(2) ?? '0.00'} km'
-                : 'Medir trajeto',
-          ),
-        ),
       );
     },
   );
@@ -166,9 +154,10 @@ class Dashboard extends StatelessWidget {
       0,
       (total, offer) => total + offer.fare,
     );
-    final kmToday = controller.sessions
-        .where((session) => DateUtils.isSameDay(session.startedAt, today))
-        .fold<double>(0, (total, session) => total + session.distanceKm);
+    final kmToday = acceptedToday.fold<double>(
+      0,
+      (total, offer) => total + offer.totalKm,
+    );
     final fuelCost = kmToday * s.selectedFuelCostPerKm;
     final balanceAfterFuel = revenue - fuelCost;
     return ListView(
@@ -204,7 +193,7 @@ class Dashboard extends StatelessWidget {
                   'Aceitas: ${acceptedToday.length}  |  Receita: R\$ ${revenue.toStringAsFixed(2)}',
                 ),
                 Text(
-                  'Rodado: ${kmToday.toStringAsFixed(2)} km  |  ${s.recommendedFuel}: -R\$ ${fuelCost.toStringAsFixed(2)}',
+                  'Km estimado: ${kmToday.toStringAsFixed(2)} km  |  ${s.recommendedFuel}: -R\$ ${fuelCost.toStringAsFixed(2)}',
                 ),
                 Text(
                   'Saldo apos combustivel: R\$ ${balanceAfterFuel.toStringAsFixed(2)}',
@@ -344,7 +333,7 @@ class ReportsPage extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 10),
-        Text('Distancia rodada: ${totalKm.toStringAsFixed(2)} km'),
+        Text('Km estimado pelas aceitas: ${totalKm.toStringAsFixed(2)} km'),
         const SizedBox(height: 22),
         Card(
           child: Padding(
@@ -382,9 +371,10 @@ class ReportsPage extends StatelessWidget {
         0,
         (total, offer) => total + offer.fare,
       );
-      final km = controller.sessions
-          .where((session) => DateUtils.isSameDay(session.startedAt, date))
-          .fold<double>(0, (total, session) => total + session.distanceKm);
+      final km = accepted.fold<double>(
+        0,
+        (total, offer) => total + offer.totalKm,
+      );
       return DayEarnings(
         date: date,
         revenue: revenue,

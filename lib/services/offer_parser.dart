@@ -10,21 +10,20 @@ class OfferParser {
     String source = 'monitor_android',
   }) {
     final text = _normalise(rawText);
-    final platform = _platform(text);
+    if (!_looksLikeRequestCard(text)) return null;
+
     final fareMatch = RegExp(r'r\$\s*(\d+(?:[.,]\d{2})?)').firstMatch(text);
-    final kms = RegExp(
-      r'(\d+(?:[.,]\d+)?)\s*km',
-    ).allMatches(text).map((match) => _number(match.group(1)!)).toList();
-    if (platform == null || fareMatch == null || kms.length < 2) return null;
+    final distances = _distances(text);
+    if (fareMatch == null || distances.length < 2) return null;
 
     final fare = _number(fareMatch.group(1)!);
-    final pickup = kms[0];
-    final destination = kms[1];
+    final pickup = distances[0];
+    final destination = distances[1];
     if (fare <= 0 || pickup < 0 || destination <= 0) return null;
     final perKm = fare / (pickup + destination);
 
     return RideOffer(
-      platform: platform,
+      platform: _platform(text),
       fare: fare,
       pickupKm: pickup,
       destinationKm: destination,
@@ -39,26 +38,56 @@ class OfferParser {
     );
   }
 
-  RidePlatform? _platform(String text) {
-    if (text.contains('uber')) return RidePlatform.uber;
-    if (RegExp(r'(^|\D)99(\D|$)').hasMatch(text) || text.contains('99pop')) {
-      return RidePlatform.ninetyNine;
-    }
-    return null;
+  RidePlatform _platform(String text) => RegExp(r'\buber\s*x\b').hasMatch(text)
+      ? RidePlatform.uber
+      : RidePlatform.ninetyNine;
+
+  bool _looksLikeRequestCard(String text) {
+    if (RegExp(r'\buber\s*x\b').hasMatch(text)) return true;
+
+    final timedRouteLines = RegExp(
+      r'\d+\s*min\s*\(\s*\d+(?:[.,]\d+)?\s*(?:km|m)\s*\)',
+    ).allMatches(text);
+    if (timedRouteLines.length >= 2) return true;
+
+    final hasRequestMarker = RegExp(
+      r'\b(99|99pop|oferta|solicitacao|aceitar|recusar|nova corrida|chamada)\b',
+    ).hasMatch(text);
+    final hasPickupMarker = RegExp(
+      r'\b(ate voce|buscar|passageiro|embarque|coleta)\b',
+    ).hasMatch(text);
+    final hasDestinationMarker = RegExp(
+      r'\b(viagem|corrida|destino|desembarque)\b',
+    ).hasMatch(text);
+    return hasRequestMarker && hasPickupMarker && hasDestinationMarker;
   }
 
   String _normalise(String text) => text
       .toLowerCase()
       .replaceAll('ã', 'a')
       .replaceAll('á', 'a')
+      .replaceAll('à', 'a')
       .replaceAll('â', 'a')
       .replaceAll('é', 'e')
+      .replaceAll('ê', 'e')
       .replaceAll('í', 'i')
       .replaceAll('ó', 'o')
       .replaceAll('ô', 'o')
       .replaceAll('õ', 'o')
       .replaceAll('ú', 'u')
-      .replaceAll('\n', ' ');
+      .replaceAll('ç', 'c');
+
+  List<double> _distances(String text) {
+    final matches = RegExp(r'(\d+(?:[.,]\d+)?)\s*(km|m)\b').allMatches(text);
+    final distances = <double>[];
+    for (final match in matches) {
+      final before = text.substring(0, match.start).trimRight();
+      if (before.endsWith('/') || before.endsWith('r\$')) continue;
+      final value = _number(match.group(1)!);
+      distances.add(match.group(2) == 'm' ? value / 1000 : value);
+    }
+    return distances;
+  }
 
   double _number(String value) {
     if (value.contains(',')) {

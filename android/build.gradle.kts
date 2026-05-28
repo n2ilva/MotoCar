@@ -1,5 +1,3 @@
-import org.gradle.api.tasks.compile.JavaCompile
-
 allprojects {
     repositories {
         google()
@@ -19,15 +17,6 @@ subprojects {
 }
 subprojects {
     project.evaluationDependsOn(":app")
-}
-
-subprojects {
-    if (name == "geolocator_android") {
-        tasks.withType<JavaCompile>().configureEach {
-            // geolocator_android still targets Java 8; JDK 17 reports that as obsolete.
-            options.compilerArgs.add("-Xlint:-options")
-        }
-    }
 }
 
 tasks.register<Delete>("clean") {

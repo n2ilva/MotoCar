@@ -1,6 +1,5 @@
 package br.com.motocar.motocar
 
-import android.Manifest
 import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -11,7 +10,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import androidx.core.content.ContextCompat
 import org.json.JSONArray
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
@@ -135,11 +133,6 @@ class MainActivity : FlutterActivity() {
             .putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode)
             .putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data)
             .putExtra(ScreenCaptureService.EXTRA_APP_VISIBLE, true)
-            .putExtra(
-                ScreenCaptureService.EXTRA_LOCATION_ENABLED,
-                ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
-                    android.content.pm.PackageManager.PERMISSION_GRANTED
-            )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(service)
         else startService(service)
         pendingResult?.success(true)
