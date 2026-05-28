@@ -46,6 +46,9 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _onNativeOffer(Map<Object?, Object?> map) async {
+    // Aguarda 1 segundo para a animação de entrada da notificação terminar
+    // antes de ler o texto, evitando capturar frames de transição.
+    await Future<void>.delayed(const Duration(seconds: 1));
     final raw = (map['rawText'] as String?) ?? '';
     final parsed = _parser.parse(raw, settings, source: 'monitor_android');
     if (parsed == null) return;
